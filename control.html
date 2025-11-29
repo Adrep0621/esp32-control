@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control ESP32 - GitHub Pages</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+    <style>
+        .status-connected { color: #198754; }
+        .status-disconnected { color: #dc3545; }
+        #log-box {
+            height: 200px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 0.375rem;
+            padding: 10px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        .log-entry { margin-bottom: 5px; }
+        .log-time { color: #6c757d; }
+        .log-error { color: #dc3545; }
+        .log-success { color: #198754; }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1 class="text-center mb-4">Control ESP32 - GitHub Pages</h1>
+        
+        <!-- Estado de Conexión -->
+        <div class="card mb-3">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Conexión MQTT</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>Broker:</strong> broker.hivemq.com:8884 (WebSocket)</p>
+                        <p><strong>Estado:</strong> 
+                            <span id="connection-status" class="status-disconnected">Desconectado</span>
+                        </p>
+                    </div>
+                    <div class="col-md-6">
+                        <button id="connect-btn" class="btn btn-success">Conectar MQTT</button>
+                        <button id="disconnect-btn" class="btn btn-danger" disabled>Desconectar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Control de Dispositivos -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header bg-warning">
+                        <h5 class="mb-0">Control LED</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        <p>Estado: <span id="led-status" class="badge bg-secondary">?</span></p>
+                        <button id="led-on" class="btn btn-warning">ENCENDER LED</button>
+                        <button id="led-off" class="btn btn-secondary">APAGAR LED</button>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0">Control Relé</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        <p>Estado: <span id="relay-status" class="badge bg-secondary">?</span></p>
+                        <button id="relay-on" class="btn btn-info text-white">ACTIVAR RELÉ</button>
+                        <button id="relay-off" class="btn btn-secondary">DESACTIVAR RELÉ</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Caja de Texto para Logs -->
+        <div class="card mt-3">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0">Log de Comunicación ESP32</h5>
+            </div>
+            <div class="card-body">
+                <div id="log-box"></div>
+                <div class="mt-2">
+                    <button id="clear-log" class="btn btn-sm btn-outline-secondary">Limpiar Log</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuración MQTT
+        const brokerHost = "broker.hivemq.com";
+        const brokerPort = 8884;
+        const clientId = "web_client_" + Math.random().toString(16).substr(2, 8);
+        
+        // Topics (AJUSTE ESTOS VALORES PARA QUE COINCIDAN CON SU ESP32)
+        const TOPIC_LED_COMMAND = "casa/led/command";
+        const TOPIC_RELAY_COMMAND = "casa/relay/command";
+        const TOPIC_LED_STATUS = "casa/led/status";
+        const TOPIC_RELAY_STATUS = "casa/relay/status";
+
+        let client = null;
+        let isConnected = false;
+
+        // Elementos DOM
+        const connectionStatus = document.getElementById('connection-status');
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const logBox = document.getElementById('log-box');
+        const clearLogBtn = document.getElementById('clear-log');
+
+        // Función para agregar mensajes al log
+        function addLog(message, type = '') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry ${type}`;
+            logEntry.innerHTML = `<span class="log-time">[${timestamp}]</span> ${message}`;
+            logBox.appendChild(logEntry);
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        // Conectar a MQTT
+        function connectMQTT() {
+            addLog("Conectando al broker MQTT...");
+            
+            client = new Paho.MQTT.Client(brokerHost, brokerPort, clientId);
+            
+            client.onConnectionLost = onConnectionLost;
+            client.onMessageArrived = onMessageArrived;
+            
+            const options = {
+                onSuccess: onConnect,
+                onFailure: onConnectFail,
+                useSSL: true,
+                timeout: 3,
+                keepAliveInterval: 60
+            };
+            
+            client.connect(options);
+        }
+
+        function onConnect() {
+            isConnected = true;
+            connectionStatus.textContent = "Conectado";
+            connectionStatus.className = "status-connected";
+            connectBtn.disabled = true;
+            disconnectBtn.disabled = false;
+            
+            // Suscribirse a topics de estado
+            client.subscribe(TOPIC_LED_STATUS);
+            client.subscribe(TOPIC_RELAY_STATUS);
+            
+            addLog("✅ Conectado al broker MQTT correctamente", "log-success");
+            addLog(`Suscrito a: ${TOPIC_LED_STATUS}`, "log-success");
+            addLog(`Suscrito a: ${TOPIC_RELAY_STATUS}`, "log-success");
+        }
+
+        function onConnectFail(response) {
+            addLog("❌ Error conectando al broker: " + response.errorMessage, "log-error");
+        }
+
+        function onConnectionLost(response) {
+            isConnected = false;
+            connectionStatus.textContent = "Desconectado";
+            connectionStatus.className = "status-disconnected";
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+            
+            if (response.errorCode !== 0) {
+                addLog("❌ Conexión perdida: " + response.errorMessage, "log-error");
+            }
+        }
+
+        function onMessageArrived(message) {
+            const topic = message.destinationName;
+            const payload = message.payloadString;
+            
+            addLog(`📨 Mensaje recibido: ${topic} -> ${payload}`);
+            
+            // Actualizar estados en la interfaz
+            if (topic === TOPIC_LED_STATUS) {
+                document.getElementById('led-status').textContent = payload.toUpperCase();
+                document.getElementById('led-status').className = `badge bg-${payload === 'on' ? 'warning' : 'secondary'}`;
+            } else if (topic === TOPIC_RELAY_STATUS) {
+                document.getElementById('relay-status').textContent = payload.toUpperCase();
+                document.getElementById('relay-status').className = `badge bg-${payload === 'on' ? 'info' : 'secondary'}`;
+            }
+        }
+
+        // Enviar comandos
+        function sendCommand(topic, command) {
+            if (!isConnected) {
+                addLog("⚠️ No conectado al broker", "log-error");
+                return;
+            }
+            
+            const message = new Paho.MQTT.Message(command);
+            message.destinationName = topic;
+            client.send(message);
+            
+            addLog(`📤 Comando enviado: ${topic} -> ${command}`);
+        }
+
+        // Event Listeners
+        connectBtn.addEventListener('click', connectMQTT);
+        
+        disconnectBtn.addEventListener('click', function() {
+            if (client && isConnected) {
+                client.disconnect();
+                addLog("🔌 Desconectado del broker");
+            }
+        });
+
+        clearLogBtn.addEventListener('click', function() {
+            logBox.innerHTML = '';
+        });
+
+        // Controles LED
+        document.getElementById('led-on').addEventListener('click', function() {
+            sendCommand(TOPIC_LED_COMMAND, "on");
+        });
+
+        document.getElementById('led-off').addEventListener('click', function() {
+            sendCommand(TOPIC_LED_COMMAND, "off");
+        });
+
+        // Controles Relé
+        document.getElementById('relay-on').addEventListener('click', function() {
+            sendCommand(TOPIC_RELAY_COMMAND, "on");
+        });
+
+        document.getElementById('relay-off').addEventListener('click', function() {
+            sendCommand(TOPIC_RELAY_COMMAND, "off");
+        });
+
+        // Log inicial
+        addLog("Página cargada. Lista para conectar al broker MQTT");
+        addLog(`Topics configurados:`, "log-success");
+        addLog(`- Comando LED: ${TOPIC_LED_COMMAND}`);
+        addLog(`- Comando Relé: ${TOPIC_RELAY_COMMAND}`);
+        addLog(`- Estado LED: ${TOPIC_LED_STATUS}`);
+        addLog(`- Estado Relé: ${TOPIC_RELAY_STATUS}`);
+    </script>
+</body>
+</html>
